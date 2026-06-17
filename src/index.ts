@@ -15,6 +15,7 @@ import { SaveReportAsJsonPlugin } from "./plugins/SaveReportAsJsonPlugin.js";
 import { SiteDumpPlugin } from "./plugins/SiteDumpPlugin.js";
 import { HtmlProcessorPlugin } from "./plugins/HtmlProcessorPlugin.js";
 import { CspInventoryPlugin } from "./plugins/CspInventoryPlugin.js";
+import { CspNoncePlugin } from "./plugins/CspNoncePlugin.js";
 import { CssAuditPlugin } from "./plugins/CssAuditPlugin.js";
 import { ImagePlugin } from "./plugins/ImagePlugin.js";
 import { SeoUrlRulesPlugin } from "./plugins/SeoUrlRulesPlugin.js";
@@ -349,6 +350,11 @@ async function main() {
         .register(
             new CspInventoryPlugin({
                 maxExampleUrls: Number(process.env.CSP_MAX_EXAMPLE_URLS ?? 3),
+            }),
+        )
+        .register(
+            new CspNoncePlugin({
+                checkNonceReuse: (process.env.CSP_NONCE_CHECK_REUSE ?? "true") === "true",
             }),
         )
         .register(
