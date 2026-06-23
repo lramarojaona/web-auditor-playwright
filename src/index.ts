@@ -14,6 +14,8 @@ import { ConsoleStatusPlugin } from "./plugins/ConsoleStatusPlugin.js";
 import { SaveReportAsJsonPlugin } from "./plugins/SaveReportAsJsonPlugin.js";
 import { SiteDumpPlugin } from "./plugins/SiteDumpPlugin.js";
 import { HtmlProcessorPlugin } from "./plugins/HtmlProcessorPlugin.js";
+import { CspInventoryPlugin } from "./plugins/CspInventoryPlugin.js";
+import { CspNoncePlugin } from "./plugins/CspNoncePlugin.js";
 import { CssAuditPlugin } from "./plugins/CssAuditPlugin.js";
 import { ImagePlugin } from "./plugins/ImagePlugin.js";
 import { SeoUrlRulesPlugin } from "./plugins/SeoUrlRulesPlugin.js";
@@ -343,6 +345,16 @@ async function main() {
             new SecurityHeadersPlugin({
                 auditOnlyStartUrl: (process.env.SECURITY_ONLY_START_URL ?? "true") === "true",
                 maxCookieLifetimeDays: Number(process.env.COOKIE_MAX_LIFETIME_DAYS ?? 365),
+            }),
+        )
+        .register(
+            new CspInventoryPlugin({
+                maxExampleUrls: Number(process.env.CSP_MAX_EXAMPLE_URLS ?? 3),
+            }),
+        )
+        .register(
+            new CspNoncePlugin({
+                checkNonceReuse: (process.env.CSP_NONCE_CHECK_REUSE ?? "true") === "true",
             }),
         )
         .register(
