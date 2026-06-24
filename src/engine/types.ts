@@ -61,6 +61,7 @@ export type CrawlOptions = {
     urlBlocklist?: RegExp[];
     reportDir: string;
     resumeRunId?: number;
+    blockNofollow?: boolean;
 };
 
 export type DownloadArtifact = {
@@ -109,11 +110,12 @@ export type FindingData = Record<string, unknown>;
 
 export type ResourceReportLink = {
     type: string;
-    text: string;
+    text: string | null;
     url: string;
     tag?: string | null;
     target?: string | null;
     enqueueResult?: string;
+    nofollow?: boolean;
 };
 
 export type ResourceReportA11yAxeNode = {
@@ -154,6 +156,7 @@ export type EnqueueRequest = {
     url: string;
     depth?: number;
     source?: string;
+    noFollow?: boolean;
 };
 
 export type UrlRejectionReason =
@@ -164,7 +167,8 @@ export type UrlRejectionReason =
     | "cross_origin_blocked"
     | "blocked_by_blocklist"
     | "stop_requested"
-    | "max_pages_reached";
+    | "max_pages_reached"
+    | "nofollow_blocked";
 
 export type FindingCode =
     // Content / SEO / HTML
