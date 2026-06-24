@@ -422,6 +422,7 @@ async function main() {
             urlBlocklist: urlBlocklist,
             reportDir: path.join(reportOutputDir, websiteId),
             resumeRunId,
+            blockNofollow: (process.env.BLOCK_NOFOLLOW ?? "false") === "true",
         },
         registry,
     );
