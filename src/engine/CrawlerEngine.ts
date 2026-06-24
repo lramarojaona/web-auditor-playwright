@@ -382,6 +382,15 @@ export class CrawlerEngine {
             };
         }
 
+        // Check if nofollow blocking is enabled and this request has noFollow=true
+        if (this.opts.blockNofollow && request.noFollow) {
+            return {
+                accepted: false,
+                normalizedUrl,
+                reason: "nofollow_blocked",
+            };
+        }
+
         const decision = this.evaluateUrl(normalizedUrl);
         if (!decision.allowed) {
             return {
@@ -441,7 +450,7 @@ export class CrawlerEngine {
                         linkText: link.text ?? null,
                         tag: link.tag ?? link.type ?? null,
                         target: link.target ?? null,
-                        nofollow: false,
+                        nofollow: link.nofollow ?? false,
                         isInternal: isAllowedHost(normalizedToUrl, allowedHosts),
                         enqueueResult: link.enqueueResult,
                     };
