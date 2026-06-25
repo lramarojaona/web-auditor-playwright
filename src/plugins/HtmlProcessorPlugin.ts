@@ -106,6 +106,7 @@ export class HtmlProcessorPlugin extends BasePlugin implements IPlugin {
             const enqueueResult = ctx.crawler.enqueueUrl({
                 url: link.url,
                 source: this.name,
+                noFollow: link.nofollow,
             });
             link.enqueueResult = enqueueResult.reason;
         }
@@ -291,12 +292,16 @@ export class HtmlProcessorPlugin extends BasePlugin implements IPlugin {
                     });
                 }
 
+                const rel = el.getAttribute("rel");
+                const isNofollow = rel?.toLowerCase().split(/\s+/).includes("nofollow") ?? false;
+
                 links.push({
                     type: el.tagName.toLowerCase(),
                     tag: el.tagName.toLowerCase(),
                     target: el.getAttribute("target"),
                     url: absoluteUrl,
-                    text: el.textContent?.trim() ?? null,
+                    text: el.textContent?.trim() || null,
+                    nofollow: isNofollow,
                 });
             }
 
