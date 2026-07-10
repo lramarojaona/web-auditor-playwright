@@ -53,14 +53,25 @@ type CspEntry = {
     exampleUrls: string[];
 };
 
+type CspBlockedResource = {
+    url: string;
+    directive: string;
+    resourceType?: string;
+    violationType: "blocked" | "report-only";
+    message: string;
+};
+
 type CspInventoryState = {
     entries: Record<string, CspEntry>;
+    blockedResources: CspBlockedResource[];
 };
 
 type PageCspState = {
     attached: boolean;
     requests: Array<{ origin: string; resourceType: string; url: string }>;
+    blockedResources: CspBlockedResource[];
     requestListener: ((request: Request) => void) | null;
+    consoleListener: ((message: any) => void) | null;
 };
 
 export type CspInventoryPluginOptions = {
@@ -94,6 +105,7 @@ export class CspInventoryPlugin extends BasePlugin implements IPlugin {
 
         if (phase === "beforeGoto") {
             pageState.requests = [];
+            pageState.blockedResources = [];
             this.attachListeners(ctx.page, pageState, ctx.engineState.origin);
             this.register(ctx);
             return;
@@ -145,6 +157,37 @@ export class CspInventoryPlugin extends BasePlugin implements IPlugin {
                 }
             }
 
+            // Process blocked resources
+            if (pageState.blockedResources.length > 0) {
+                // Add blocked resources to global state
+                globalState.blockedResources.push(...pageState.blockedResources);
+
+                // Group blocked resources by violation type
+                const blockedCount = pageState.blockedResources.filter(r => r.violationType === "blocked").length;
+                const reportOnlyCount = pageState.blockedResources.filter(r => r.violationType === "report-only").length;
+
+                let message = "";
+                if (blockedCount > 0 && reportOnlyCount > 0) {
+                    message = `CSP blocked ${blockedCount} resource(s) and reported ${reportOnlyCount} violation(s).`;
+                } else if (blockedCount > 0) {
+                    message = `CSP blocked ${blockedCount} resource(s).`;
+                } else if (reportOnlyCount > 0) {
+                    message = `CSP reported ${reportOnlyCount} violation(s) in report-only mode.`;
+                }
+
+                this.registerWarning(
+                    ctx,
+                    "security",
+                    "CSP_BLOCKED_RESOURCE",
+                    message,
+                    {
+                        blockedResources: pageState.blockedResources,
+                        blockedCount,
+                        reportOnlyCount
+                    }
+                );
+            }
+
             const originCount = Object.keys(perPageOrigins).length;
             if (originCount > 0) {
                 this.registerInfo(
@@ -154,7 +197,7 @@ export class CspInventoryPlugin extends BasePlugin implements IPlugin {
                     `Loads resources from ${originCount} external origin(s).`,
                     { externalOrigins: perPageOrigins },
                 );
-            } else {
+            } else if (pageState.blockedResources.length === 0) {
                 this.register(ctx);
             }
             return;
@@ -240,21 +283,147 @@ export class CspInventoryPlugin extends BasePlugin implements IPlugin {
             }
         };
 
+        // Listen for CSP violations in console messages
+        state.consoleListener = (message: any) => {
+            const text = message.text();
+            const type = message.type();
+
+            // Check for CSP violation messages
+            if (type === "error" || type === "warning" || type === "info") {
+                if (this.isCspViolationMessage(text)) {
+                    const blockedResource = this.parseCspViolation(text);
+                    if (blockedResource) {
+                        state.blockedResources.push(blockedResource);
+                    }
+                }
+            }
+        };
+
         page.on("request", state.requestListener);
+        page.on("console", state.consoleListener);
         state.attached = true;
     }
 
     private detachListeners(page: Page, state: PageCspState): void {
-        if (!state.attached || !state.requestListener) return;
-        page.off("request", state.requestListener);
-        state.requestListener = null;
+        if (!state.attached) return;
+
+        if (state.requestListener) {
+            page.off("request", state.requestListener);
+            state.requestListener = null;
+        }
+
+        if (state.consoleListener) {
+            page.off("console", state.consoleListener);
+            state.consoleListener = null;
+        }
+
         state.attached = false;
+    }
+
+    private isCspViolationMessage(text: string): boolean {
+        // Common CSP violation message patterns
+        const cspPatterns = [
+            /Content.?Security.?Policy/i,
+            /CSP/i,
+            /refused to (load|execute|apply|connect)/i,
+            /violates the following (Content Security Policy )?directive/i,
+            /blocked by Content Security Policy/i,
+            /blocked the loading of a resource/i,
+            /\[Report Only\]/i
+        ];
+
+        return cspPatterns.some(pattern => pattern.test(text));
+    }
+
+    private parseCspViolation(message: string): CspBlockedResource | null {
+        try {
+            let url = '';
+            let directive = '';
+            let resourceType: string | undefined;
+
+            // Pattern 1: "blocked the loading of a resource (frame-src) at https://example.com"
+            const pattern1 = message.match(/blocked the loading of a resource \(([^)]+)\) at ([^\s?]+)/i);
+            if (pattern1) {
+                resourceType = pattern1[1];
+                url = pattern1[2];
+                directive = resourceType; // The resource type in parentheses is often the directive
+            }
+
+            // Pattern 2: Traditional format "refused to load ... because it violates ... directive: 'script-src'"
+            if (!url) {
+                const urlMatch = message.match(/(?:from|at|load|execute|apply)\s+['"]?([^'"'\s?]+)['"]?/i);
+                url = urlMatch ? urlMatch[1] : '';
+            }
+
+            if (!directive) {
+                const directiveMatch = message.match(/violates the following (?:Content Security Policy )?directive:\s*['"]?([^'"'\s]+)['"]?/i);
+                directive = directiveMatch ? directiveMatch[1] : '';
+            }
+
+            // Extract directive from "because it violates the following directive:" format
+            if (!directive) {
+                const directiveMatch2 = message.match(/because it violates the following directive:\s*['"]?([^'"'\s]+)['"]?/i);
+                directive = directiveMatch2 ? directiveMatch2[1] : '';
+            }
+
+            // Determine if it's report-only or blocking
+            const isReportOnly = /\[Report Only\]/i.test(message);
+            const violationType: "blocked" | "report-only" = isReportOnly ? "report-only" : "blocked";
+
+            // Try to determine resource type from URL if not already determined
+            if (!resourceType && url) {
+                if (url.match(/\.(js|mjs)$/i)) resourceType = "script";
+                else if (url.match(/\.(css)$/i)) resourceType = "stylesheet";
+                else if (url.match(/\.(png|jpg|jpeg|gif|svg|webp)$/i)) resourceType = "image";
+                else if (url.match(/\.(woff|woff2|ttf|otf)$/i)) resourceType = "font";
+            }
+
+            // Map common resource types to proper directive names
+            if (resourceType) {
+                const typeMapping: Record<string, string> = {
+                    'frame-src': 'frame-src',
+                    'script-src': 'script-src',
+                    'style-src': 'style-src',
+                    'img-src': 'img-src',
+                    'font-src': 'font-src',
+                    'connect-src': 'connect-src',
+                    'media-src': 'media-src',
+                    'object-src': 'object-src',
+                    'worker-src': 'worker-src',
+                    'manifest-src': 'manifest-src'
+                };
+
+                if (typeMapping[resourceType]) {
+                    directive = directive || typeMapping[resourceType];
+                }
+            }
+
+            if (url && directive) {
+                return {
+                    url,
+                    directive,
+                    resourceType,
+                    violationType,
+                    message: message.trim()
+                };
+            }
+        } catch (error) {
+            // Ignore parsing errors
+        }
+
+        return null;
     }
 
     private getPageState(page: Page): PageCspState {
         let existing = this.pageStates.get(page);
         if (!existing) {
-            existing = { attached: false, requests: [], requestListener: null };
+            existing = {
+                attached: false,
+                requests: [],
+                blockedResources: [],
+                requestListener: null,
+                consoleListener: null
+            };
             this.pageStates.set(page, existing);
         }
         return existing;
@@ -266,7 +435,7 @@ export class CspInventoryPlugin extends BasePlugin implements IPlugin {
         if (existing && typeof existing === "object" && "entries" in (existing as object)) {
             return existing as CspInventoryState;
         }
-        const created: CspInventoryState = { entries: {} };
+        const created: CspInventoryState = { entries: {}, blockedResources: [] };
         engineState.any[key] = created;
         return created;
     }
