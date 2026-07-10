@@ -559,7 +559,49 @@ async function main() {
         issues,
         inventory,
     };
-    const jsonReport = JSON.stringify(globalReport, null, 4);
+    
+    // Handle potential RangeError for very large reports
+    let jsonReport: string;
+    try {
+        jsonReport = JSON.stringify(globalReport, null, 4);
+    } catch (error) {
+        if (error instanceof RangeError) {
+            // Fallback: serialize each property separately to avoid string length limits
+            const parts: string[] = [];
+            parts.push("{");
+            
+            const keys = Object.keys(globalReport);
+            for (let i = 0; i < keys.length; i++) {
+                const key = keys[i];
+                const keyStr = JSON.stringify(key);
+                
+                try {
+                    const valueStr = JSON.stringify(globalReport[key as keyof typeof globalReport], null, 4);
+                    const separator = i < keys.length - 1 ? "," : "";
+                    parts.push(`${keyStr}: ${valueStr}${separator}`);
+                } catch (propError) {
+                    // If individual property is too large, provide a summary
+                    const value = globalReport[key as keyof typeof globalReport];
+                    let summary: string;
+                    if (Array.isArray(value)) {
+                        summary = `"[Array with ${value.length} items - too large to serialize]"`;
+                    } else if (typeof value === 'object' && value !== null) {
+                        const objKeys = Object.keys(value);
+                        summary = `"[Object with ${objKeys.length} properties - too large to serialize]"`;
+                    } else {
+                        summary = `"[${typeof value} - too large to serialize]"`;
+                    }
+                    const separator = i < keys.length - 1 ? "," : "";
+                    parts.push(`${keyStr}: ${summary}${separator}`);
+                }
+            }
+            
+            parts.push("}");
+            jsonReport = parts.join("\n");
+        } else {
+            throw error;
+        }
+    }
     if (outputFormat === "json" || outputFormat === "both") {
         console.log(jsonReport);
     }
