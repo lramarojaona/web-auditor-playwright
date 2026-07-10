@@ -270,6 +270,7 @@ export type FindingCode =
     | "CONSOLE_ERRORS_DETECTED"
     // Security Headers
     | "CSP_EXTERNAL_RESOURCE"
+    | "CSP_BLOCKED_RESOURCE"
     | "CSP_NONCE_MISSING"
     | "CSP_NONCE_MISMATCH"
     | "CSP_NONCE_REUSED"
