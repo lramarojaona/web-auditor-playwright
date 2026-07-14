@@ -166,6 +166,23 @@ export class CspInventoryPlugin extends BasePlugin implements IPlugin {
                 const blockedCount = pageState.blockedResources.filter(r => r.violationType === "blocked").length;
                 const reportOnlyCount = pageState.blockedResources.filter(r => r.violationType === "report-only").length;
 
+                // Extract blocked URLs similar to how externalOrigins works
+                const blockedUrls: Record<string, { directive: string; violationType: string; count: number; message: string }> = {};
+                for (const resource of pageState.blockedResources) {
+                    if (resource.url) {
+                        const key = resource.url;
+                        if (!blockedUrls[key]) {
+                            blockedUrls[key] = {
+                                directive: resource.directive,
+                                violationType: resource.violationType,
+                                count: 0,
+                                message: resource.message
+                            };
+                        }
+                        blockedUrls[key].count += 1;
+                    }
+                }
+
                 let message = "";
                 if (blockedCount > 0 && reportOnlyCount > 0) {
                     message = `CSP blocked ${blockedCount} resource(s) and reported ${reportOnlyCount} violation(s).`;
@@ -181,7 +198,7 @@ export class CspInventoryPlugin extends BasePlugin implements IPlugin {
                     "CSP_BLOCKED_RESOURCE",
                     message,
                     {
-                        blockedResources: pageState.blockedResources,
+                        blockedResources: blockedUrls,
                         blockedCount,
                         reportOnlyCount
                     }
@@ -349,15 +366,29 @@ export class CspInventoryPlugin extends BasePlugin implements IPlugin {
                 directive = resourceType; // The resource type in parentheses is often the directive
             }
 
-            // Pattern 2: Traditional format "refused to load ... because it violates ... directive: 'script-src'"
+            // Pattern 2: "Loading the script 'https://example.com/script.js' violates..."
+            if (!url) {
+                const urlMatch = message.match(/Loading the (?:script|stylesheet|image|font|frame|media|object|worker|manifest)\s+['"]([^'"]+)['"]/i);
+                if (urlMatch) {
+                    url = urlMatch[1];
+                }
+            }
+
+            // Pattern 3: Traditional format "refused to load ... because it violates ... directive: 'script-src'"
             if (!url) {
                 const urlMatch = message.match(/(?:from|at|load|execute|apply)\s+['"]?([^'"'\s?]+)['"]?/i);
                 url = urlMatch ? urlMatch[1] : '';
             }
 
+            // Extract directive from various formats
             if (!directive) {
-                const directiveMatch = message.match(/violates the following (?:Content Security Policy )?directive:\s*['"]?([^'"'\s]+)['"]?/i);
-                directive = directiveMatch ? directiveMatch[1] : '';
+                const directiveMatch = message.match(/violates the following (?:Content Security Policy )?directive:\s*['"]\s*([^'"]+?)\s*['"]/i);
+                if (directiveMatch) {
+                    // Extract the first directive name from the policy string
+                    const policyString = directiveMatch[1];
+                    const firstDirective = policyString.split(/\s+/)[0];
+                    directive = firstDirective;
+                }
             }
 
             // Extract directive from "because it violates the following directive:" format
@@ -376,6 +407,15 @@ export class CspInventoryPlugin extends BasePlugin implements IPlugin {
                 else if (url.match(/\.(css)$/i)) resourceType = "stylesheet";
                 else if (url.match(/\.(png|jpg|jpeg|gif|svg|webp)$/i)) resourceType = "image";
                 else if (url.match(/\.(woff|woff2|ttf|otf)$/i)) resourceType = "font";
+            }
+
+            // Determine resource type from message content
+            if (!resourceType) {
+                if (message.includes('Loading the script')) resourceType = "script";
+                else if (message.includes('Loading the stylesheet')) resourceType = "stylesheet";
+                else if (message.includes('Loading the image')) resourceType = "image";
+                else if (message.includes('Loading the font')) resourceType = "font";
+                else if (message.includes('Loading the frame')) resourceType = "frame";
             }
 
             // Map common resource types to proper directive names
