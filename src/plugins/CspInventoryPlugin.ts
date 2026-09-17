@@ -241,40 +241,39 @@ export class CspInventoryPlugin extends BasePlugin implements IPlugin {
                         count: number;
                         message: string;
                         exampleUrls: string[];
+                        resourceTypes: string[];
                     }
                 > = {};
                 for (const resource of pageState.blockedResources) {
                     if (resource.url) {
                         try {
-                            // Extract domain from URL to use as key
                             const parsedUrl = new URL(resource.url);
                             const domain = parsedUrl.origin;
-
                             if (!blocked[domain]) {
                                 blocked[domain] = {
                                     directive: resource.directive,
                                     violationType: resource.violationType,
+                                    resourceTypes: resource.resourceType ? [resource.resourceType] : [],
                                     count: 0,
                                     message: resource.message,
                                     exampleUrls: [],
                                 };
+                            } else if (resource.resourceType && !blocked[domain].resourceTypes.includes(resource.resourceType)) {
+                                blocked[domain].resourceTypes.push(resource.resourceType);
                             }
-
-                            const domainEntry = blocked[domain];
-                            domainEntry.count += 1;
-
-                            // Add example URLs up to the limit
+                            const entry = blocked[domain];
+                            entry.count += 1;
                             if (
-                                domainEntry.exampleUrls.length < this.maxExampleUrls &&
-                                !domainEntry.exampleUrls.includes(resource.url)
-                            ) {
-                                domainEntry.exampleUrls.push(resource.url);
-                            }
-                        } catch {
+                                entry.exampleUrls.length < this.maxExampleUrls &&
+                                !entry.exampleUrls.includes(resource.url)
+                                ) {
+                                entry.exampleUrls.push(resource.url);
+                                }
+                            } catch {
                             // Skip invalid URLs
+                                }
                         }
                     }
-                }
 
                 let message = "";
                 if (blockedCount > 0 && reportOnlyCount > 0) {
@@ -553,7 +552,10 @@ export class CspInventoryPlugin extends BasePlugin implements IPlugin {
 
             // Determine if it's report-only or blocking
             // Support both '[Report Only]' and 'report-only Content Security Policy directive' forms
-            const isReportOnly = /\[Report Only\]/i.test(message) || /report-only Content Security Policy directive/i.test(message);
+            const isReportOnly = /\[Report Only\]/i.test(message)
+                || /report-only Content Security Policy directive/i.test(message)
+                || /the policy is report-only/i.test(message)
+                || /so the violation has been logged but no further action has been taken/i.test(message);
             const violationType: "blocked" | "report-only" = isReportOnly
                 ? "report-only"
                 : "blocked";
