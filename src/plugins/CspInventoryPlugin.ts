@@ -179,6 +179,22 @@ export class CspInventoryPlugin extends BasePlugin implements IPlugin {
                 }
                 const pageOrigin = perPageOrigins[origin];
 
+                // Collect all resourceTypes for this origin
+                if (!pageOrigin.resourceTypes.includes(resourceType)) {
+                    pageOrigin.resourceTypes.push(resourceType);
+                }
+                // Always use frame-src if any resourceType is 'frame'
+                if (pageOrigin.resourceTypes.includes("frame")) {
+                    pageOrigin.directive = "frame-src";
+                } else if (pageOrigin.resourceTypes.includes("script")) {
+                    pageOrigin.directive = "script-src";
+                } else if (pageOrigin.resourceTypes.includes("image")) {
+                    pageOrigin.directive = "img-src";
+                } else {
+                    // fallback
+                    pageOrigin.directive = directive;
+                }
+
                 // Update source context if we have mixed sources
                 if (pageOrigin.sourceContext !== (isFromIframe ? "iframe" : "main_document")) {
                     pageOrigin.sourceContext = "mixed";
@@ -412,9 +428,14 @@ export class CspInventoryPlugin extends BasePlugin implements IPlugin {
                     requestFrame !== state.mainFrame && resourceType !== "document";
                 const iframeUrl = isFromIframe ? requestFrame.url() : undefined;
 
+                // If this is a document request for an iframe (not main frame), reclassify as 'frame' resourceType
+                let resourceTypeForCsp = request.resourceType();
+                if (resourceTypeForCsp === "document" && requestFrame !== state.mainFrame) {
+                    resourceTypeForCsp = "frame";
+                }
                 state.requests.push({
                     origin: parsed.origin,
-                    resourceType: request.resourceType(),
+                    resourceType: resourceTypeForCsp,
                     url,
                     isFromIframe,
                     iframeUrl,
