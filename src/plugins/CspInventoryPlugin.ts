@@ -138,6 +138,16 @@ export class CspInventoryPlugin extends BasePlugin implements IPlugin {
                     };
                 }
             > = {};
+            // Build a set of blocked origins to exclude from CSP_EXTERNAL_RESOURCE
+            const blockedOrigins = new Set<string>();
+            for (const resource of pageState.blockedResources) {
+                if (resource.url) {
+                    try {
+                        const parsed = new URL(resource.url);
+                        blockedOrigins.add(parsed.origin);
+                    } catch {}
+                }
+            }
 
             for (const {
                 origin,
@@ -146,6 +156,10 @@ export class CspInventoryPlugin extends BasePlugin implements IPlugin {
                 isFromIframe,
                 iframeUrl,
             } of pageState.requests) {
+                // If this origin is blocked, do not record it as an external resource
+                if (blockedOrigins.has(origin)) {
+                    continue;
+                }
                 const directive = RESOURCE_TYPE_TO_DIRECTIVE[resourceType] ?? "default-src";
                 const globalKey = `${origin}|${resourceType}`;
 
@@ -353,12 +367,16 @@ export class CspInventoryPlugin extends BasePlugin implements IPlugin {
         }
     }
 
+    // End of run()
+
     getReport(engineState: EngineState): Report {
         const state = this.getInventoryState(engineState);
         const entries = Object.values(state.entries);
 
         // Collect unique origins and total request counts per directive
         const byDirective: Record<string, { origins: Set<string>; count: number }> = {};
+        
+        // Add external resources (allowed)
         for (const entry of entries) {
             if (!byDirective[entry.directive]) {
                 byDirective[entry.directive] = { origins: new Set(), count: 0 };
@@ -367,7 +385,29 @@ export class CspInventoryPlugin extends BasePlugin implements IPlugin {
             byDirective[entry.directive].count += entry.count;
         }
 
+        // Add blocked resources
+        const stateBlocked = state.blockedResources || [];
+        for (const blockedResource of stateBlocked) {
+            try {
+                const origin = (new URL(blockedResource.url)).origin;
+                const directive = blockedResource.directive;
+                if (!byDirective[directive]) {
+                    byDirective[directive] = { origins: new Set(), count: 0 };
+                }
+                byDirective[directive].origins.add(origin);
+                byDirective[directive].count += 1;
+            } catch {
+                // Skip invalid URLs
+            }
+        }
+
         const uniqueOrigins = new Set(entries.map((e) => e.origin)).size;
+
+        // Summarize blocked resources
+        const blockedOrigins = new Set(stateBlocked.map(b => {
+            try { return (new URL(b.url)).origin; } catch { return undefined; }
+        }).filter(Boolean));
+        const totalBlocked = stateBlocked.length;
 
         const reportItems: Array<{ key: string; label: string; value: string | number }> = [
             {
@@ -375,6 +415,16 @@ export class CspInventoryPlugin extends BasePlugin implements IPlugin {
                 label: "Unique external origins",
                 value: uniqueOrigins,
             },
+            {
+                key: "uniqueBlockedOrigins",
+                label: "Unique blocked origins",
+                value: blockedOrigins.size,
+            },
+            {
+                key: "totalBlockedResources",
+                label: "Total blocked resource events",
+                value: totalBlocked,
+            }
         ];
 
         const allDirectives = [
@@ -599,19 +649,27 @@ export class CspInventoryPlugin extends BasePlugin implements IPlugin {
                 else if (message.includes("Framing")) resourceType = "frame";
             }
 
-            // Map common resource types to proper directive names
-            if (resourceType) {
+            // Map resource types to proper directive names for CSP recommendations
+            // For frame resources, always recommend frame-src regardless of what directive was violated
+            if (resourceType === "frame") {
+                directive = "frame-src";
+            } else if (resourceType) {
                 const typeMapping: Record<string, string> = {
-                    "frame-src": "frame-src",
-                    "script-src": "script-src",
-                    "style-src": "style-src",
-                    "img-src": "img-src",
-                    "font-src": "font-src",
-                    "connect-src": "connect-src",
-                    "media-src": "media-src",
-                    "object-src": "object-src",
-                    "worker-src": "worker-src",
-                    "manifest-src": "manifest-src",
+                    "script": "script-src",
+                    "stylesheet": "style-src",
+                    "image": "img-src",
+                    "font": "font-src",
+                    "xhr": "connect-src",
+                    "fetch": "connect-src",
+                    "websocket": "connect-src",
+                    "eventsource": "connect-src",
+                    "ping": "connect-src",
+                    "media": "media-src",
+                    "object": "object-src",
+                    "embed": "object-src",
+                    "worker": "worker-src",
+                    "sharedworker": "worker-src",
+                    "manifest": "manifest-src",
                 };
 
                 if (typeMapping[resourceType]) {
