@@ -156,8 +156,11 @@ export class CspInventoryPlugin extends BasePlugin implements IPlugin {
                 isFromIframe,
                 iframeUrl,
             } of pageState.requests) {
-                // If this origin is blocked, do not record it as an external resource
-                if (blockedOrigins.has(origin)) {
+                // Only skip if this exact resource was blocked (resource-level exclusion)
+                const isResourceBlocked = pageState.blockedResources.some(
+                    (blocked) => blocked.url === url && blocked.resourceType === resourceType
+                );
+                if (isResourceBlocked) {
                     continue;
                 }
                 const directive = RESOURCE_TYPE_TO_DIRECTIVE[resourceType] ?? "default-src";
