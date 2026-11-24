@@ -232,6 +232,12 @@ npm start
 | `ROBOTS_TXT_REQUIRE_CRAWL_DELAY`            | `true`                                                           | When enabled, `robots-txt` warns if the `User-agent: *` group does not define a `Crawl-delay`.                                                                                                                                                                                                                       |
 | `ROBOTS_TXT_REQUIRE_SITEMAP`                | `true`                                                           | When enabled, `robots-txt` warns if `robots.txt` does not declare any `Sitemap` directive.                                                                                                                                                                                                                           |
 | `SIMPLIFIED_AUDIT_LOCALES`                  | `fr,nl,de,en`                                                    | Comma-separated list of locales for the simplified audit HTML pages. Supported values: `fr`, `nl`, `de`, `en`. Invalid entries are ignored, and the default set is used if none remain.                                                                                                                              |
+| `ARCHIVE_HTML_MODE`                         | `raw`                                                            | HTML archiving mode: "raw" (network) or "dom" (rendered)                                                                                                                                                                                                                                                             |
+| `ARCHIVE_OUTPUT_DIR`                        | `downloads/archive`                                              | Output folder for ArchivePlugin per site                                                                                                                                                                                                                                                                             |
+| `ARCHIVE_STORE_LOCAL_ASSETS`                | `true`                                                           | If "false", do not store local assets                                                                                                                                                                                                                                                                                |
+| `ARCHIVE_EXCLUDE_ASSETS_PATHS`              | empty                                                            | Comma-separated substrings of file paths to exclude (e.g. /admin,/private)                                                                                                                                                                                                                                           |
+| `ARCHIVE_EXCLUDE_ASSETS_EXTENSIONS`         | empty                                                            | Comma-separated extensions to exclude assets (e.g. .pdf,.mp4,.svg)                                                                                                                                                                                                                                                   |
+
 
 ## Performance Tuning
 
@@ -453,6 +459,15 @@ You can find detailed explanations, examples, and remediation guidance for each 
 | performance-metrics | SLOW_PAGE_LOAD            | Slow load time      | Integrator | Optimize performance   |
 | performance-metrics | SLOW_DOM_CONTENT_LOADED   | Slow DOM ready      | Integrator | Optimize scripts       |
 | performance-metrics | PERFORMANCE_MEASURED      | Performance metrics | Integrator | Analyze                |
+
+### Archive Plugin
+
+| Plugin   | Code             | Description                                                            | Profiles              | Recommended Actions              |
+|----------|------------------|------------------------------------------------------------------------|-----------------------|----------------------------------|
+| archive  | ARCHIVED_HTML    | Saved a local HTML page to the archive output folder                    | Webmaster, Developer  | None (informational)             |
+| archive  | ARCHIVED_ASSET   | Saved a local asset (CSS, JS, image, font, etc.) to the archive         | Webmaster, Developer  | None (informational)             |
+| archive  | UNEXPECTED_ERROR | Failed to archive an asset due to network or file error                 | Webmaster, Developer  | Check connectivity, file system  |
+
 
 ### Image Audit
 

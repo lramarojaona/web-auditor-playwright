@@ -38,6 +38,7 @@ import { PdfAccessibilityPlugin } from "./plugins/PdfAccessibilityPlugin.js";
 import { PerformanceMetricsPlugin } from "./plugins/PerformanceMetricsPlugin.js";
 import { TlsCertificatePlugin } from "./plugins/TlsCertificatePlugin.js";
 import { IpSupportPlugin } from "./plugins/IpSupportPlugin.js";
+import { ArchivePlugin } from "./plugins/ArchivePlugin.js";
 import { TextUtils } from "./utils/TextUtils.js";
 import { fetchPublicIpAddresses } from "./utils/PublicIpResolver.js";
 import { XlsxExporter } from "./reporting/XlsxExporter.js";
@@ -300,6 +301,7 @@ async function main() {
                 requireSitemap: (process.env.ROBOTS_TXT_REQUIRE_SITEMAP ?? "true") === "true",
             }),
         )
+        .register(new ArchivePlugin())
         .register(new SitemapPlugin())
         .register(
             new ImageMetadataPlugin({

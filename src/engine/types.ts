@@ -350,7 +350,11 @@ export type FindingCode =
     | "HIGH_RESOURCE_COUNT"
     | "SLOW_PAGE_LOAD"
     | "SLOW_DOM_CONTENT_LOADED"
-    | "PERFORMANCE_MEASURED";
+    | "PERFORMANCE_MEASURED"
+    // Archive
+    | "ARCHIVED_HTML"
+    | "ARCHIVED_ASSET"
+    | "ARCHIVE_UNEXPECTED_ERROR";
 
 export type EnqueueResult = {
     accepted: boolean;
