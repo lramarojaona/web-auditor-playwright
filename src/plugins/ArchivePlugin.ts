@@ -3,37 +3,73 @@ import path from "node:path";
 import { BasePlugin } from "../engine/BasePlugin.js";
 import { PluginPhase, ResourceContext } from "../engine/types.js";
 
-/**
- * ArchivePlugin
- * - Archives HTML pages (raw or rendered DOM)
- * - Archives assets per page, deduplicated
- * - Optionally skips local assets
- * - Stores outputs in folder including site identifier
- * - Reports archived pages count
- */
+// --- Helper: Static-site export mapping ---
+function htmlUrlToArchivePath(url: string): string {
+    const urlObj = new URL(url);
+    let relPath = urlObj.pathname;
+    const htmlExts = [".html", ".htm", ".xhtml"];
+    if (relPath === "/" || relPath === "") return "index.html";
+    relPath = relPath.replace(/^\/+/, "");
+    const endsWithSlash = urlObj.pathname.endsWith("/");
+    const ext = path.extname(urlObj.pathname).toLowerCase();
+    if (endsWithSlash || !ext || !htmlExts.includes(ext)) {
+        return path.join(relPath.replace(/\/+$/,""), "index.html");
+    }
+    return relPath;
+}
 
+// --- Helper: Write meta/JS redirect page ---
+async function writeRedirectHtml(destPath: string, targetPath: string) {
+    const redirectHtml = `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Redirecting...</title>
+    <meta http-equiv="refresh" content="0; URL='${targetPath}'" />
+    <link rel="canonical" href="${targetPath}">
+    <script>window.location.replace(${JSON.stringify(targetPath)});</script>
+</head>
+<body>
+    <p>Redirecting to <a href="${targetPath}">${targetPath}</a> ...</p>
+</body>
+</html>`;
+    await fs.mkdir(path.dirname(destPath), { recursive: true });
+    await fs.writeFile(destPath, redirectHtml, "utf8");
+}
+
+// -------- MAIN PLUGIN --------
 export class ArchivePlugin extends BasePlugin {
     name = "archive";
     phases: PluginPhase[] = ["afterGoto", "process"];
+
     private htmlMode: "raw" | "dom" =
         process.env.ARCHIVE_HTML_MODE === "dom" ? "dom" : "raw";
     private websiteId: string =
         process.env.WEBSITE_ID ||
-        (process.env.START_URL ? new URL(process.env.START_URL).hostname : "unknown_site");
+        (process.env.START_URL
+            ? new URL(process.env.START_URL).hostname
+            : "unknown_site");
     private outputDir: string = path.resolve(
         process.env.ARCHIVE_OUTPUT_DIR || "downloads/archive",
         this.websiteId
     );
-    private storeLocalAssets: boolean = process.env.ARCHIVE_STORE_LOCAL_ASSETS !== "false";
-    // Exclusion options
-    private excludePaths: string[] = (process.env.ARCHIVE_EXCLUDE_ASSETS_PATHS || '').split(',').map(s=>s.trim()).filter(Boolean);
-    private excludeExtensions: string[] = (process.env.ARCHIVE_EXCLUDE_ASSETS_EXTENSIONS || '').split(',').map(s=>s.trim().replace(/^\./, '').toLowerCase()).filter(Boolean);
+    private storeLocalAssets: boolean =
+        process.env.ARCHIVE_STORE_LOCAL_ASSETS !== "false";
+    private excludePaths: string[] = (process.env.ARCHIVE_EXCLUDE_ASSETS_PATHS || "")
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+    private excludeExtensions: string[] = (process.env.ARCHIVE_EXCLUDE_ASSETS_EXTENSIONS || "")
+        .split(",")
+        .map((s) => s.trim().replace(/^\./, "").toLowerCase())
+        .filter(Boolean);
+
     private seenAssets = new Set<string>();
     private savedPages = new Set<string>();
-    private savedAssets: { path: string, ext: string, mime?: string }[] = [];
+    private savedAssets: { path: string; ext: string; mime?: string }[] = [];
+    private networkRequestsMap = new WeakMap<any, string[]>();
 
     applies(ctx: ResourceContext): boolean {
-        // Only archive HTML pages (not PDFs or downloads etc)
         return !!ctx.mime && ctx.mime.startsWith("text/html") && !ctx.download;
     }
 
@@ -41,6 +77,7 @@ export class ArchivePlugin extends BasePlugin {
         try {
             if (phase === "afterGoto") {
                 await this.archiveHtml(ctx);
+                if (ctx.page) this.attachNetworkLogger(ctx.page);
             }
             if (phase === "process") {
                 await this.archiveAssets(ctx);
@@ -56,18 +93,20 @@ export class ArchivePlugin extends BasePlugin {
     }
 
     private async archiveHtml(ctx: ResourceContext) {
-        const urlObj = new URL(ctx.url);
-        // Copy full path (as in static site exporters)
-        let relPath = urlObj.pathname;
-        if (!relPath || relPath === "/") {
-            relPath = "/index.html";
-        } else if (relPath.endsWith("/")) {
-            relPath = relPath + "index.html";
-        } else if (!relPath.match(/\.[a-zA-Z0-9]+$/)) {
-            relPath = relPath + "/index.html";
-        }
-        relPath = relPath.replace(/^\//, "");
-        const destPath = path.join(this.outputDir, relPath); // No /pages prefix
+        const originalUrl = ctx.url;
+        const finalUrl = ctx.page?.url?.() ? ctx.page.url() : ctx.url;
+        const archiveRelPath = htmlUrlToArchivePath(finalUrl);
+        const destPath = path.join(this.outputDir, archiveRelPath);
+
+        // Remove file if it's in the way of a directory creation
+        const parentDir = path.dirname(destPath);
+        try {
+            const stats = await fs.stat(parentDir).catch(() => null);
+            if (stats && stats.isFile()) {
+                await fs.unlink(parentDir);
+            }
+        } catch {}
+
         await fs.mkdir(path.dirname(destPath), { recursive: true });
         let html = "";
         if (this.htmlMode === "dom" && ctx.page) {
@@ -75,85 +114,122 @@ export class ArchivePlugin extends BasePlugin {
         } else if (ctx.response) {
             html = await ctx.response.text();
         }
+
+
         await fs.writeFile(destPath, html, "utf8");
-        this.savedPages.add(ctx.url);
+        this.savedPages.add(finalUrl);
         this.registerInfo(
             ctx,
             "content",
             "ARCHIVED_HTML",
             `HTML archived to ${destPath}`
         );
+
+        // --- SYNTHETIC ROOT /index.html On Redirect ---
+        const originalPathname = new URL(originalUrl).pathname;
+        const finalPathname = new URL(finalUrl).pathname;
+
+        if ((originalPathname === "/" || originalPathname === "") && finalPathname !== originalPathname) {
+            const relativeTarget = finalPathname + new URL(finalUrl).search + new URL(finalUrl).hash;
+            const rootIndex = path.join(this.outputDir, "index.html");
+            await writeRedirectHtml(rootIndex, relativeTarget);
+            this.savedPages.add(originalUrl);
+            this.registerInfo(
+                ctx,
+                "content",
+                "ARCHIVED_HTML",
+                `Synthetic /index.html redirecting to ${relativeTarget}`
+            );
+        }
+    }
+
+    private attachNetworkLogger(page: any) {
+        if (!this.networkRequestsMap.has(page)) {
+            const reqs: string[] = [];
+            this.networkRequestsMap.set(page, reqs);
+            page.on("requestfinished", (req: any) => {
+                const url = req.url();
+                const rt = req.resourceType ? req.resourceType() : "";
+                if (rt !== "document" && !reqs.includes(url)) {
+                    reqs.push(url);
+                }
+            });
+        }
     }
 
     private async archiveAssets(ctx: ResourceContext) {
-        if (!ctx.page) return;
-        // --- Extra: Capture all font network requests ---
-        const fontRequests = new Set<string>();
-        const fontMimeRegex = /font|woff|truetype|opentype/;
-        const extFontRegex = /\.(woff2?|ttf|otf|eot)(\?.*)?$/i;
-        // Attach only ONCE per page
-        ctx.page.on('requestfinished', async (request) => {
-            try {
-                const response = await request.response();
-                const url = request.url();
-                if (!response || !url) return;
-                const ct = response.headers()['content-type'] || '';
-                if (fontMimeRegex.test(ct) || extFontRegex.test(url)) {
-                    fontRequests.add(url);
-                }
-            } catch (e) {
-                // Ignore
-            }
-        });
-        // --- Standard DOM asset collection ---
-        const assetUrls: string[] = await ctx.page.evaluate(() => {
+        const origin = new URL(ctx.url).origin;
+        const page = ctx.page;
+
+        let netAssetUrls: string[] =
+            page && this.networkRequestsMap.has(page)
+                ? this.networkRequestsMap.get(page)!
+                : [];
+
+        // Universal DOM scrape for any link[href][rel] and src assets (img, script, etc.)
+        const domAssets: string[] = await page.evaluate(() => {
             const urls: string[] = [];
-            document.querySelectorAll('img[src]')
-                .forEach(img => urls.push((img as HTMLImageElement).src));
-            document.querySelectorAll('script[src]')
-                .forEach(script => urls.push((script as HTMLScriptElement).src));
-            document.querySelectorAll('link[rel="stylesheet"][href]')
-                .forEach(link => urls.push((link as HTMLLinkElement).href));
-            document.querySelectorAll('link[rel="preload"][href][as="font"]')
-                .forEach(link => urls.push((link as HTMLLinkElement).href));
-            document.querySelectorAll('link[rel="icon"][href],link[rel="shortcut icon"][href]')
-                .forEach(link => urls.push((link as HTMLLinkElement).href));
-            return Array.from(new Set(urls));
+            document.querySelectorAll('img[src],script[src],video[src],audio[src],source[src],iframe[src]')
+                .forEach((e: any) => urls.push(e.src));
+            document.querySelectorAll('link[rel][href]')
+                .forEach((e: any) => urls.push(e.href));
+            return urls;
         });
-        // Add collected font requests after network idle (0.7s)
-        await ctx.page.waitForTimeout(700);
-        for (const fontUrl of fontRequests) {
-            if (!assetUrls.includes(fontUrl)) assetUrls.push(fontUrl);
-        }
-        const origin = ctx.engineState.origin || (new URL(ctx.url)).origin;
+
+        // --- CSS: Extract all asset URLs (fonts, images, SVG, etc)
+        const cssAssetUrls: string[] = await page.evaluate(() => {
+            const urls: string[] = [];
+            for (const styleSheet of Array.from(document.styleSheets)) {
+                let rules: CSSRuleList | null = null;
+                try { rules = styleSheet.cssRules; } catch { continue; }
+                if (!rules) continue;
+                for (const rule of Array.from(rules)) {
+                    // Look in any CSS rule, not just font-face!
+                    const text = rule.cssText;
+                    const matches = text.match(/url\(([^)]+)\)/g);
+                    if (matches) {
+                        for (const m of matches) {
+                            let urlValue = m.replace(/^url\(["']?/, "").replace(/["']?\)$/, "");
+                            urlValue = urlValue.trim();
+                            if (urlValue && !urlValue.startsWith("data:")) urls.push(urlValue);
+                        }
+                    }
+                }
+            }
+            return urls;
+        });
+        for (const url of cssAssetUrls) netAssetUrls.push(url);
+
+        // Merge, deduplicate, filter
+        const assetUrls = new Set<string>([
+            ...netAssetUrls,
+            ...domAssets
+        ]);
+
         for (const assetUrl of assetUrls) {
             try {
                 if (!assetUrl) continue;
-                const absUrl = assetUrl.startsWith("http") ? assetUrl : new URL(assetUrl, ctx.url).href;
-                if (!this.storeLocalAssets && absUrl.startsWith(origin)) {
-                    continue;
-                }
-                // Only copy local files
+                // Relative URLs for fonts and CSS: resolve against document!
+                const absUrl = assetUrl.startsWith("http")
+                    ? assetUrl
+                    : new URL(assetUrl, ctx.url).href;
+                if (!this.storeLocalAssets && absUrl.startsWith(origin)) continue;
                 if (!absUrl.startsWith(origin)) continue;
                 if (this.seenAssets.has(absUrl)) continue;
                 this.seenAssets.add(absUrl);
 
                 const urlObj = new URL(absUrl);
                 let assetRelPath = urlObj.pathname.replace(/^\//, "");
-                // Exclude certain paths
-                if (this.excludePaths.some(sub => assetRelPath.includes(sub))) continue;
-                // Exclude certain extensions
-                const ext = path.extname(assetRelPath).replace('.', '').toLowerCase() || 'noext';
+                if (this.excludePaths.some((sub) => assetRelPath.includes(sub))) continue;
+                const ext = path.extname(assetRelPath).replace(".", "").toLowerCase() || "noext";
                 if (this.excludeExtensions.includes(ext)) continue;
                 const destPath = path.join(this.outputDir, assetRelPath);
 
-                // Only create directory if about to write the file
+                await fs.mkdir(path.dirname(destPath), { recursive: true });
                 const assetResp = await fetch(absUrl);
                 if (assetResp.ok) {
-                    await fs.mkdir(path.dirname(destPath), { recursive: true });
                     const buffer = await assetResp.arrayBuffer();
                     await fs.writeFile(destPath, Buffer.from(buffer));
-                    // Track extension and mime for report
                     const mime = assetResp.headers.get("content-type") || undefined;
                     this.savedAssets.push({ path: assetRelPath, ext, mime });
                     this.registerInfo(
@@ -176,18 +252,21 @@ export class ArchivePlugin extends BasePlugin {
                     ctx,
                     "resources",
                     "ARCHIVE_UNEXPECTED_ERROR",
-                    `Failed to archive asset ${assetUrl}: ${e instanceof Error ? e.message : String(e)}`
+                    `Failed to archive asset ${assetUrl}: ${
+                        e instanceof Error ? e.message : String(e)
+                    }`
                 );
             }
         }
     }
 
     getReport() {
-        // Assets breakdown by extension
         const extCount: Record<string, number> = {};
         for (const asset of this.savedAssets) {
             extCount[asset.ext] = (extCount[asset.ext] || 0) + 1;
         }
+        // Remove 'noext' from report
+        if (extCount["noext"]) delete extCount["noext"];
         return {
             plugin: this.name,
             label: "Pages & assets archived",
@@ -202,13 +281,18 @@ export class ArchivePlugin extends BasePlugin {
                     label: "Pages archived",
                     value: this.savedPages.size,
                 },
-                ...Object.entries(extCount).sort((a,b)=>b[1]-a[1]).map(([ext,count])=>({
-                    key: `assets_${ext}`,
-                    label: `Assets .${ext}`,
-                    value: count,
-                })),
+                ...this.mapAssetExtensionBreakdown(extCount),
             ],
         };
     }
-}
 
+    private mapAssetExtensionBreakdown(extCount: Record<string, number>) {
+        return Object.entries(extCount)
+            .sort((a, b) => b[1] - a[1])
+            .map(([ext, count]) => ({
+                key: `assets_${ext}`,
+                label: `Assets .${ext}`,
+                value: count,
+            }));
+    }
+}
