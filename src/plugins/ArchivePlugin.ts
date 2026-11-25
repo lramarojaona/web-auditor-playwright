@@ -93,6 +93,11 @@ export class ArchivePlugin extends BasePlugin {
     }
 
     private async archiveHtml(ctx: ResourceContext) {
+        // Skip archiving HTML pages for non-OK (404/500/etc) responses
+        if (ctx.response && (!ctx.response.ok() || (ctx.response.status() && ctx.response.status() >= 400))) {
+            // Optionally log: console.warn(`[ArchivePlugin] SKIP HTML (non-OK response): ${ctx.page?.url() || ctx.url} status=${ctx.response.status()}`);
+            return;
+        }
         const originalUrl = ctx.url;
         const finalUrl = ctx.page?.url?.() ? ctx.page.url() : ctx.url;
         const archiveRelPath = htmlUrlToArchivePath(finalUrl);
@@ -220,33 +225,55 @@ export class ArchivePlugin extends BasePlugin {
 
                 const urlObj = new URL(absUrl);
                 let assetRelPath = urlObj.pathname.replace(/^\//, "");
+
+                // Defensive cleaning: remove spaces/newlines from HTML references
+                assetRelPath = assetRelPath.trim();
+                if (!assetRelPath || assetRelPath.endsWith("/")) {
+                    continue;
+                }
                 if (this.excludePaths.some((sub) => assetRelPath.includes(sub))) continue;
                 const ext = path.extname(assetRelPath).replace(".", "").toLowerCase() || "noext";
                 if (this.excludeExtensions.includes(ext)) continue;
                 const destPath = path.join(this.outputDir, assetRelPath);
 
-                await fs.mkdir(path.dirname(destPath), { recursive: true });
+
+                // Remove destPath if it's a directory
+                try {
+                    const stat = await fs.stat(destPath).catch(() => null);
+                    if (stat && stat.isDirectory()) {
+                        await fs.rm(destPath, { recursive: true, force: true });
+                    }
+                } catch {}
+
                 const assetResp = await fetch(absUrl);
-                if (assetResp.ok) {
-                    const buffer = await assetResp.arrayBuffer();
-                    await fs.writeFile(destPath, Buffer.from(buffer));
-                    const mime = assetResp.headers.get("content-type") || undefined;
-                    this.savedAssets.push({ path: assetRelPath, ext, mime });
-                    this.registerInfo(
-                        ctx,
-                        "resources",
-                        "ARCHIVED_ASSET",
-                        `Asset archived to ${destPath}`,
-                        { assetUrl }
-                    );
-                } else {
-                    this.registerWarning(
-                        ctx,
-                        "resources",
-                        "ARCHIVE_UNEXPECTED_ERROR",
-                        `Failed to archive asset ${assetUrl}: HTTP status ${assetResp.status}`
-                    );
+                const contentType = assetResp.headers.get("content-type");
+                if (!assetResp.ok) {
+                    continue;
                 }
+                if (!contentType || contentType.startsWith("text/html")) {
+                    continue;
+                }
+                // Only now, after validating, create parent dir and write file
+                const parent = path.dirname(destPath);
+                try {
+                    const stat = await fs.stat(parent).catch(() => null);
+                    if (stat && stat.isFile()) {
+                        await fs.unlink(parent);
+                    }
+                } catch {}
+                await fs.mkdir(parent, { recursive: true });
+
+                const buffer = await assetResp.arrayBuffer();
+                await fs.writeFile(destPath, Buffer.from(buffer));
+                const mime = contentType || undefined;
+                this.savedAssets.push({ path: assetRelPath, ext, mime });
+                this.registerInfo(
+                    ctx,
+                    "resources",
+                    "ARCHIVED_ASSET",
+                    `Asset archived to ${destPath}`,
+                    { assetUrl }
+                );
             } catch (e) {
                 this.registerWarning(
                     ctx,
