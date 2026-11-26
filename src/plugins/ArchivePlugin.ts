@@ -237,11 +237,18 @@ export class ArchivePlugin extends BasePlugin {
                 const destPath = path.join(this.outputDir, assetRelPath);
 
 
-                // Remove destPath if it's a directory
+                // Remove destPath if it's a directory, BUT NEVER delete a real page directory (contains index.html)
                 try {
                     const stat = await fs.stat(destPath).catch(() => null);
                     if (stat && stat.isDirectory()) {
-                        await fs.rm(destPath, { recursive: true, force: true });
+                        const indexHtmlPath = path.join(destPath, "index.html");
+                        const indexExists = await fs.stat(indexHtmlPath).then(s => s.isFile()).catch(() => false);
+                        if (indexExists) {
+                            // Defensive: do not remove folder that contains archived page!
+                            continue; // skip asset write
+                        } else {
+                            await fs.rm(destPath, { recursive: true, force: true });
+                        }
                     }
                 } catch {}
 
